@@ -1,212 +1,322 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+import { supabase } from './supabase';
 
 class ApiClient {
-  private token: string | null = null;
-
-  constructor() {
-    this.token = localStorage.getItem('auth_token');
-  }
-
-  private getHeaders(): HeadersInit {
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-    };
-
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
-    }
-
-    return headers;
-  }
-
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const response = await fetch(`${API_URL}${endpoint}`, {
-      ...options,
-      headers: {
-        ...this.getHeaders(),
-        ...options.headers,
-      },
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Request failed' }));
-      throw new Error(error.error || 'Request failed');
-    }
-
-    return response.json();
-  }
-
-  setToken(token: string | null) {
-    this.token = token;
-    if (token) {
-      localStorage.setItem('auth_token', token);
-    } else {
-      localStorage.removeItem('auth_token');
-    }
-  }
-
   async register(email: string, password: string) {
-    const response = await this.request<{ user: any; token: string }>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
     });
-    this.setToken(response.token);
-    return response;
+
+    if (error) throw error;
+    return { user: data.user, session: data.session };
   }
 
   async login(email: string, password: string) {
-    const response = await this.request<{ user: any; token: string }>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
     });
-    this.setToken(response.token);
-    return response;
+
+    if (error) throw error;
+    return { user: data.user, session: data.session };
   }
 
   async logout() {
-    try {
-      await this.request('/auth/logout', { method: 'POST' });
-    } finally {
-      this.setToken(null);
-    }
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
   }
 
   async getCurrentUser() {
-    return this.request<{ user: any }>('/auth/me');
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    return { user };
   }
 
   async adminLogin(email: string, password: string) {
-    const response = await this.request<{ user: any; token: string }>('/admin/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
     });
-    this.setToken(response.token);
-    return response;
+
+    if (error) throw error;
+
+    const { data: adminData, error: adminError } = await supabase
+      .from('admins')
+      .select('*')
+      .eq('user_id', data.user.id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (adminError) throw adminError;
+    if (!adminData) throw new Error('Not authorized as admin');
+
+    return { user: data.user, admin: adminData, session: data.session };
   }
 
   async getAdmins() {
-    return this.request<any[]>('/admin/admins');
+    const { data, error } = await supabase
+      .from('admins')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
   }
 
-  async createAdmin(data: { email: string; password: string; role?: string }) {
-    return this.request('/admin/admins', {
-      method: 'POST',
-      body: JSON.stringify(data),
+  async createAdmin(adminData: { email: string; password: string; role?: string }) {
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: adminData.email,
+      password: adminData.password,
     });
+
+    if (authError) throw authError;
+    if (!authData.user) throw new Error('Failed to create user');
+
+    const { data, error } = await supabase
+      .from('admins')
+      .insert({
+        user_id: authData.user.id,
+        email: adminData.email,
+        role: adminData.role || 'admin',
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
-  async updateAdmin(userId: string, data: { role?: string; is_active?: boolean }) {
-    return this.request(`/admin/admins/${userId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    });
+  async updateAdmin(userId: string, updates: { role?: string; is_active?: boolean }) {
+    const { data, error } = await supabase
+      .from('admins')
+      .update(updates)
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
   async deleteAdmin(userId: string) {
-    return this.request(`/admin/admins/${userId}`, {
-      method: 'DELETE',
-    });
+    const { error } = await supabase
+      .from('admins')
+      .delete()
+      .eq('user_id', userId);
+
+    if (error) throw error;
   }
 
-  async createBooking(data: any) {
-    return this.request('/bookings', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  async createBooking(bookingData: any) {
+    const { data: booking, error: bookingError } = await supabase
+      .from('bookings')
+      .insert({
+        user_id: bookingData.user_id || null,
+        name: bookingData.name,
+        email: bookingData.email,
+        phone: bookingData.phone,
+        service_type: bookingData.service_type,
+        preferred_date: bookingData.preferred_date,
+        preferred_time: bookingData.preferred_time,
+        message: bookingData.message,
+        payment_method: bookingData.payment_method,
+        total_amount: bookingData.total_amount,
+        consultation_fee: bookingData.consultation_fee,
+      })
+      .select()
+      .single();
+
+    if (bookingError) throw bookingError;
+
+    if (bookingData.services && bookingData.services.length > 0) {
+      const services = bookingData.services.map((service: any) => ({
+        booking_id: booking.id,
+        service_name: service.service_name,
+        service_price: service.service_price,
+      }));
+
+      const { error: servicesError } = await supabase
+        .from('booking_services')
+        .insert(services);
+
+      if (servicesError) throw servicesError;
+    }
+
+    return booking;
   }
 
   async getBookings() {
-    return this.request<any[]>('/bookings');
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Not authenticated');
+
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*, booking_services(*)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
   }
 
   async getAllBookings() {
-    return this.request<any[]>('/bookings/all');
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*, booking_services(*)')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
   }
 
-  async updateBooking(id: string, data: any) {
-    return this.request(`/bookings/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    });
+  async updateBooking(id: string, updates: any) {
+    const { data, error } = await supabase
+      .from('bookings')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
   async deleteBooking(id: string) {
-    return this.request(`/bookings/${id}`, {
-      method: 'DELETE',
-    });
+    const { error } = await supabase
+      .from('bookings')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
   }
 
   async getSimpleCases() {
-    return this.request<any[]>('/cases/simple');
+    const { data, error } = await supabase
+      .from('simple_cases')
+      .select('*')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true });
+
+    if (error) throw error;
+    return data;
   }
 
   async getAllSimpleCases() {
-    return this.request<any[]>('/cases/simple/all');
+    const { data, error } = await supabase
+      .from('simple_cases')
+      .select('*')
+      .order('display_order', { ascending: true });
+
+    if (error) throw error;
+    return data;
   }
 
-  async createSimpleCase(data: any) {
-    return this.request('/cases/simple', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  async createSimpleCase(caseData: any) {
+    const { data, error } = await supabase
+      .from('simple_cases')
+      .insert(caseData)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
-  async updateSimpleCase(id: string, data: any) {
-    return this.request(`/cases/simple/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    });
+  async updateSimpleCase(id: string, updates: any) {
+    const { data, error } = await supabase
+      .from('simple_cases')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
   async deleteSimpleCase(id: string) {
-    return this.request(`/cases/simple/${id}`, {
-      method: 'DELETE',
-    });
+    const { error } = await supabase
+      .from('simple_cases')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
   }
 
   async getDetailedCases(category?: string) {
-    const query = category ? `?category=${category}` : '';
-    return this.request<any[]>(`/cases/detailed${query}`);
+    let query = supabase
+      .from('detailed_cases')
+      .select('*')
+      .eq('is_active', true);
+
+    if (category) {
+      query = query.eq('category', category);
+    }
+
+    const { data, error } = await query.order('display_order', { ascending: true });
+
+    if (error) throw error;
+    return data;
   }
 
   async getAllDetailedCases() {
-    return this.request<any[]>('/cases/detailed/all');
+    const { data, error } = await supabase
+      .from('detailed_cases')
+      .select('*')
+      .order('display_order', { ascending: true });
+
+    if (error) throw error;
+    return data;
   }
 
-  async createDetailedCase(data: any) {
-    return this.request('/cases/detailed', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  async createDetailedCase(caseData: any) {
+    const { data, error } = await supabase
+      .from('detailed_cases')
+      .insert(caseData)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
-  async updateDetailedCase(id: string, data: any) {
-    return this.request(`/cases/detailed/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    });
+  async updateDetailedCase(id: string, updates: any) {
+    const { data, error } = await supabase
+      .from('detailed_cases')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
   }
 
   async deleteDetailedCase(id: string) {
-    return this.request(`/cases/detailed/${id}`, {
-      method: 'DELETE',
-    });
+    const { error } = await supabase
+      .from('detailed_cases')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
   }
 
   async uploadImage(file: File) {
+    const { data: { session } } = await supabase.auth.getSession();
+
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_URL}/upload/image`, {
-      method: 'POST',
-      headers: {
-        Authorization: this.token ? `Bearer ${this.token}` : '',
-      },
-      body: formData,
-    });
+    const response = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/upload-image`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session?.access_token || import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: formData,
+      }
+    );
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Upload failed' }));
@@ -217,23 +327,8 @@ class ApiClient {
   }
 
   async uploadImages(files: File[]) {
-    const formData = new FormData();
-    files.forEach((file) => formData.append('files', file));
-
-    const response = await fetch(`${API_URL}/upload/images`, {
-      method: 'POST',
-      headers: {
-        Authorization: this.token ? `Bearer ${this.token}` : '',
-      },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
-      throw new Error(error.error || 'Upload failed');
-    }
-
-    return response.json();
+    const results = await Promise.all(files.map(file => this.uploadImage(file)));
+    return { urls: results.map(r => r.url), filenames: results.map(r => r.filename) };
   }
 }
 
