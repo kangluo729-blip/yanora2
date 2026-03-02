@@ -28,7 +28,7 @@ function AdminLoginPage() {
         const { data: adminData, error: adminError } = await supabase
           .from('admins')
           .select('*')
-          .eq('id', authData.user.id)
+          .eq('user_id', authData.user.id)
           .eq('is_active', true)
           .maybeSingle();
 
